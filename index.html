@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>My Web Voxel Game</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: Arial, sans-serif;
+            user-select: none;
+        }
+        #canvas-container {
+            width: 100vw;
+            height: 100vh;
+        }
+        #crosshair {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 10px;
+            height: 10px;
+            margin-top: -5px;
+            margin-left: -5px;
+            pointer-events: none;
+        }
+        #crosshair::before, #crosshair::after {
+            content: '';
+            position: absolute;
+            background: white;
+        }
+        #crosshair::before {
+            top: 4px; left: 0; width: 10px; height: 2px;
+        }
+        #crosshair::after {
+            top: 0; left: 4px; width: 2px; height: 10px;
+        }
+        #toolbar {
+            position: absolute;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            background: rgba(0,0,0,0.6);
+            padding: 8px;
+            border-radius: 8px;
+            gap: 8px;
+        }
+        .slot {
+            width: 45px;
+            height: 45px;
+            border: 2px solid #555;
+            border-radius: 4px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-weight: bold;
+            cursor: pointer;
+            font-size: 12px;
+        }
+        .slot.active {
+            border-color: #fff;
+            box-shadow: 0 0 10px #fff;
+        }
+        #instructions {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 12px;
+            border-radius: 8px;
+            pointer-events: none;
+            font-size: 14px;
+            line-height: 1.5;
+        }
+    </style>
+    <!-- Three.js 3D 라이브러리 불러오기 -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+</head>
+<body>
+    <div id="canvas-container"></div>
+    <div id="crosshair"></div>
+    
+    <div id="instructions">
+        <strong>🎮 조작 방법</strong><br>
+        • 화면 클릭: 시점 잠금 (게임 시작)<br>
+        • ESC: 마우스 잠금 해제<br>
+        • WASD: 이동<br>
+        • Space: 점프<br>
+        • 좌클릭: 블록 파괴<br>
+        • 우클릭: 블록 설치<br>
+        • 1~5 키: 블록 선택
+    </div>
+
+    <div id="toolbar">
+        <div class="slot active" style="background: #2e8b57;" onclick="selectBlock(1)">1:잔디</div>
+        <div class="slot" style="background: #8b5a2b;" onclick="selectBlock(2)">2:흙</div>
+        <div class="slot" style="background: #808080;" onclick="selectBlock(3)">3:돌</div>
+        <div class="slot" style="background: #a0522d;" onclick="selectBlock(4)">4:나무</div>
+        <div class="slot" style="background: #228b22;" onclick="selectBlock(5)">5:잎</div>
+    </div>
+
+    <script>
+        // --- 1. 기본 Scene & Camera 설정 ---
+        const container = document.getElementById('canvas-container');
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x87ceeb); // 하늘색
+        scene.fog = new THREE.FogExp2(0x87ceeb, 0.03);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        container.appendChild(renderer.domElement);
+
+        // 조명 설정
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.6);
+        dirLight.position.set(20, 40, 20);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
+
+        // --- 2. 블록 재질 및 생성 방식 ---
+        const geometry = new THREE.BoxGeometry(1, 1, 1);
+        const materials = {
+            1: new THREE.MeshLambertMaterial({ color: 0x2e8b57 }), // 잔디
+            2: new THREE.MeshLambertMaterial({ color: 0x8b5a2b }), // 흙
+            3: new THREE.MeshLambertMaterial({ color: 0x808080 }), // 돌
+            4: new THREE.MeshLambertMaterial({ color: 0xa0522d }), // 나무
+            5: new THREE.MeshLambertMaterial({ color: 0x228b22, transparent: true, opacity: 0.9 }) // 잎사귀
+        };
+
+        const blocks = new Map();
+        function getBlockKey(x, y, z) { return `${x},${y},${z}`; }
+
+        function createBlock(x, y, z, type) {
+            const key = getBlockKey(x, y, z);
+            if (blocks.has(key)) return;
+
+            const mesh = new THREE.Mesh(geometry, materials[type]);
+            mesh.position.set(x, y, z);
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            mesh.userData = { type, x, y, z };
+            scene.add(mesh);
+            blocks.set(key, mesh);
+        }
+
+        function removeBlock(x, y, z) {
+            const key = getBlockKey(x, y, z);
+            if (blocks.has(key)) {
+                scene.remove(blocks.get(key));
+                blocks.delete(key);
+            }
+        }
+
+        // --- 3. 초기 지형 생성 (16x16) ---
+        for (let x = -8; x < 8; x++) {
+            for (let z = -8; z < 8; z++) {
+                createBlock(x, 0, z, 3); // 지하 돌
+                createBlock(x, 1, z, 2); // 흙
+                createBlock(x, 2, z, 1); // 표면 잔디
+            }
+        }
+
+        // --- 4. 플레이어 이동 및 카메라 조작 ---
+        camera.position.set(0, 4, 0);
+        
+        let selectedBlockType = 1;
+        const moveState = { forward: false, backward: false, left: false, right: false, jump: false };
+        let velocityY = 0;
+        let isGrounded = false;
+        const gravity = -20;
+        const speed = 6;
+
+        // Pointer Lock (마우스 잠금)
+        container.addEventListener('click', () => {
+            document.body.requestPointerLock();
+        });
+
+        let yaw = 0, pitch = 0;
+        document.addEventListener('mousemove', (e) => {
+            if (document.pointerLockElement === document.body) {
+                yaw -= e.movementX * 0.002;
+                pitch -= e.movementY * 0.002;
+                pitch = Math.max(-Math.PI / 2 + 0.1, Math.min(Math.PI / 2 - 0.1, pitch));
+                
+                camera.rotation.order = "YXZ";
+                camera.rotation.y = yaw;
+                camera.rotation.x = pitch;
+            }
+        });
+
+        // 키보드 입력
+        document.addEventListener('keydown', (e) => {
+            switch(e.code) {
+                case 'KeyW': moveState.forward = true; break;
+                case 'KeyS': moveState.backward = true; break;
+                case 'KeyA': moveState.left = true; break;
+                case 'KeyD': moveState.right = true; break;
+                case 'Space': if (isGrounded) velocityY = 8; break;
+                case 'Digit1': selectBlock(1); break;
+                case 'Digit2': selectBlock(2); break;
+                case 'Digit3': selectBlock(3); break;
+                case 'Digit4': selectBlock(4); break;
+                case 'Digit5': selectBlock(5); break;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            switch(e.code) {
+                case 'KeyW': moveState.forward = false; break;
+                case 'KeyS': moveState.backward = false; break;
+                case 'KeyA': moveState.left = false; break;
+                case 'KeyD': moveState.right = false; break;
+            }
+        });
+
+        function selectBlock(type) {
+            selectedBlockType = type;
+            document.querySelectorAll('.slot').forEach((slot, idx) => {
+                slot.classList.toggle('active', idx + 1 === type);
+            });
+        }
+
+        // --- 5. 마우스 클릭으로 블록 파괴 / 설치 ---
+        const raycaster = new THREE.Raycaster();
+        document.addEventListener('mousedown', (e) => {
+            if (document.pointerLockElement !== document.body) return;
+
+            raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+            const intersects = raycaster.intersectObjects(Array.from(blocks.values()));
+
+            if (intersects.length > 0) {
+                const hit = intersects[0];
+                const pos = hit.object.position;
+
+                if (e.button === 0) { // 좌클릭: 파괴
+                    removeBlock(pos.x, pos.y, pos.z);
+                } else if (e.button === 2) { // 우클릭: 설치
+                    const normal = hit.face.normal;
+                    const newX = pos.x + normal.x;
+                    const newY = pos.y + normal.y;
+                    const newZ = pos.z + normal.z;
+                    createBlock(newX, newY, newZ, selectedBlockType);
+                }
+            }
+        });
+
+        // 우클릭 기본 메뉴 비활성화
+        document.addEventListener('contextmenu', e => e.preventDefault());
+
+        // --- 6. 루프 및 물리 업데이트 ---
+        let lastTime = performance.now();
+        function animate() {
+            requestAnimationFrame(animate);
+
+            const now = performance.now();
+            const delta = (now - lastTime) / 1000;
+            lastTime = now;
+
+            if (document.pointerLockElement === document.body) {
+                // 이동 처리
+                const moveVector = new THREE.Vector3();
+                if (moveState.forward) moveVector.z -= 1;
+                if (moveState.backward) moveVector.z += 1;
+                if (moveState.left) moveVector.x -= 1;
+                if (moveState.right) moveVector.x += 1;
+                moveVector.normalize();
+                moveVector.applyAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+
+                camera.position.x += moveVector.x * speed * delta;
+                camera.position.z += moveVector.z * speed * delta;
+
+                // 간단한 중력/바닥 충돌
+                velocityY += gravity * delta;
+                camera.position.y += velocityY * delta;
+
+                if (camera.position.y <= 3.8) {
+                    camera.position.y = 3.8;
+                    velocityY = 0;
+                    isGrounded = true;
+                } else {
+                    isGrounded = false;
+                }
+            }
+
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        // 창 크기 변경 대응
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
